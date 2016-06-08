@@ -58,13 +58,15 @@ GoGoCal will look for events in a Redis database, so you need to set one up.
 `gogocal -h` prints the following, which sums it up.
 
 ```
-Usage of bin/gogocal:
-  -keyfile string
-    	Specify the Google key file. (default "key.json")
-  -redis-address string
+  -a string
     	Specify the redis address. (default "redis:6379")
-  -redis-database int
+  -d int
     	Specify the redis database index.
-  -redis-password string
+  -k string
+    	Specify the Google key file. (default "key.json")
+  -p string
     	Specify the redis password.
+  -v	Print the version.
+  -version
+    	Print the version.
 ```
