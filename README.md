@@ -12,6 +12,10 @@ GoGoCal polls the Redis database every second for items in a set with key
 that need to be processed. These keys will most likely be placed there by
 another integration process (Wordpress plugin, Drupal module, etc.).
 
+GoGoCal also polls every second for items in a set with key
+`gogocal.hcpss.org:event:status:to-delete`. This set contains keys of events
+that need to be deleted.
+
 Once the event is processed, it's key is placed in the set with key
 `gogocal.hcpss.org:event:status:processed`. This is to make it easy for the
 integration process know when an event has been processed.

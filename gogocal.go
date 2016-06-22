@@ -43,6 +43,63 @@ func (ggc *GoGoCal) MarkAsFailed(key string) {
 	ggc.rc.SAdd(failKey, key)
 }
 
+// DeleteEvent deletes the event from Google Calendar and from the Redis
+// database.
+func (ggc *GoGoCal) DeleteEvent(key string, log chan string, ec chan error) {
+	log <- fmt.Sprintf("Deleting %s", key)
+
+	// Fetch the event from Redis
+	e, err := ggc.rc.HGetAllMap(key).Result()
+	if err != nil {
+		log <- fmt.Sprintf("Failed to fetch event %s: %s", key, err.Error())
+		ec <- err
+		return
+	}
+
+	// Convert the Json encoded event into a calendar.Event.
+	event := new(calendar.Event)
+	err = json.Unmarshal([]byte(e["event"]), event)
+	if err != nil {
+		log <- fmt.Sprintf("Failed to create event %s: %s", key, err.Error())
+		ec <- err
+		return
+	}
+
+	if event.Id == "" {
+		// This event is not in the Google calendar.
+		log <- fmt.Sprintf("Event %s not found in calendar", key)
+		return
+	}
+
+	// Delete the event from the Google calendar.
+	err = ggc.cs.Events.Delete(e["calendar"], event.Id).Do()
+	if err != nil {
+		log <- fmt.Sprintf(
+			"%s (key: %s, id: %s, calendar: %s). %s",
+			"Failed to delete event from google calendar",
+			key, event.Id, e["calendar"], err.Error(),
+		)
+		ec <- err
+		return
+	}
+
+	// Delete the event from Redis
+	_, err = ggc.rc.Del(key).Result()
+	if err != nil {
+		log <- fmt.Sprintf(
+			"Failed to delete event from Redis %s: %s",
+			key,
+			err.Error(),
+		)
+		ec <- err
+		return
+	}
+
+	// The event was successfully deleted
+	log <- fmt.Sprintf("%s deleted", key)
+	ec <- nil
+}
+
 // ProcessEvent processes an event.
 func (ggc *GoGoCal) ProcessEvent(key string, log chan string, ec chan error) {
 	log <- fmt.Sprintf("Processing %s", key)
@@ -110,6 +167,7 @@ func (ggc *GoGoCal) ProcessEvent(key string, log chan string, ec chan error) {
 // Run runs the application
 func (ggc *GoGoCal) Run() {
 	toProcKey := NewKey("event", "status", "to-process").String()
+	toDelKey := NewKey("event", "status", "to-delete").String()
 
 	logs := make(chan string)
 	defer close(logs)
@@ -125,29 +183,48 @@ func (ggc *GoGoCal) Run() {
 		time.Sleep(time.Second)
 
 		// Find out if there are any events to process.
-		eventKey, err := ggc.rc.SPop(toProcKey).Result()
-		if err != nil {
-			// No keys found. Nothing to process.
-			continue
-		}
+		eventToProcKey, err := ggc.rc.SPop(toProcKey).Result()
+		if err == nil {
+			// We have an event key.
+			go func(key string) {
+				e := make(chan error)
+				defer close(e)
 
-		// We have an event key.
-		go func(key string) {
-			e := make(chan error)
-			defer close(e)
+				go ggc.ProcessEvent(key, logs, e)
 
-			go ggc.ProcessEvent(key, logs, e)
-
-			select {
-			case err := <-e:
-				if err != nil {
-					// Got an error
+				select {
+				case err := <-e:
+					if err != nil {
+						// Got an error
+						ggc.MarkAsFailed(key)
+					}
+				case <-time.After(2 * time.Minute):
+					// Timeout
 					ggc.MarkAsFailed(key)
 				}
-			case <-time.After(2 * time.Minute):
-				// Timeout
-				ggc.MarkAsFailed(key)
-			}
-		}(eventKey)
+			}(eventToProcKey)
+		}
+
+		eventToDelKey, err := ggc.rc.SPop(toDelKey).Result()
+		if err == nil {
+			// We have an event to delete.
+			go func(key string) {
+				e := make(chan error)
+				defer close(e)
+
+				go ggc.DeleteEvent(key, logs, e)
+
+				select {
+				case err := <-e:
+					if err != nil {
+						// Oops, there was an error deleting the event.
+						ggc.MarkAsFailed(key)
+					}
+				case <-time.After(2 * time.Minute):
+					// Timeout
+					ggc.MarkAsFailed(key)
+				}
+			}(eventToDelKey)
+		}
 	}
 }
